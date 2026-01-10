@@ -15,6 +15,7 @@ A lightweight, high-performance WebSocket-to-TCP proxy server written in Go. Thi
 - Lightweight and fast
 - Automatic fallback target
 - Cross-platform support
+- Include BadVPN/UDPGW VPN ( 7300 Port )
 
 ## Installation
 
@@ -29,6 +30,12 @@ A lightweight, high-performance WebSocket-to-TCP proxy server written in Go. Thi
 # Clone the repository
 git clone https://github.com/risqinf/websocket-proxy.git
 cd websocket-proxy
+
+# init library
+go mod init ssh-ws
+
+# Get Library
+go mod tidy
 
 # Build the binary
 CGO_ENABLED=0 go build -ldflags "-s -w -X 'main.Credits=Risqi Nur Fadhilah' -X 'main.Version=v1.0-Stable'" -o ssh-ws
@@ -72,7 +79,7 @@ chmod +x ssh-ws
 | `-b` | `--bind` | Bind IP address | `0.0.0.0` |
 | `-t` | `--target` | Fallback target (IP:Port) | `127.0.0.1:22` |
 | `-a` | `--auth` | Authentication password | (none) |
-| `-l` | `--logs` | Log file path | (none) |
+| `-l` | `--log / --logs` | Log file path | (none) |
 | `-h` | `--help` | Show help message | - |
 
 ## How It Works
@@ -200,7 +207,7 @@ After=network.target
 [Service]
 Type=simple
 User=nobody
-ExecStart=/usr/local/bin/ssh-ws -p 8080 -t 127.0.0.1:22 -a yourPassword -l /var/log/ssh-ws.log
+ExecStart=/usr/local/bin/ssh-ws -p 8080 -t 127.0.0.1:22 -l /var/log/ssh-ws.log
 Restart=always
 RestartSec=10
 
