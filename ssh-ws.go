@@ -1,61 +1,67 @@
 /*
- Copyright (c) 2025 Risqi Nur Fadhilah
-
- Permission is hereby granted, free of charge, to any person obtaining a copy
- of this software and associated documentation files (the "Software"), to deal
- in the Software without restriction, including without limitation the rights
- to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- copies of the Software, and to permit persons to whom the Software is
- furnished to do so, subject to the following conditions:
-
- The above copyright notice and this permission notice shall be included in
- all copies or substantial portions of the Software.
- THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- DEALINGS IN THE SOFTWARE.
-
- Thanks To:
- - Risqi Nur Fadhilah
- - Rerechan02 ( Tester )
-*/
-
-/*
-
-CMD Compile:
-CGO_ENABLED=0 go build -ldflags "-s -w -X 'main.Credits=Risqi Nur Fadhilah' -X 'main.Version=v1.0-Stable'" -o ssh-ws
-
-Minimal:
-- Debian 11
-- Ubuntu 22.04
-- go version go1.22.0 linux/amd64
-
-*/
+ * Copyright (c) 2025 Risqi Nur Fadhilah
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ *
+ * ----------------------------------------------------------------------------
+ * Project      : GO-TUNNEL PRO (SSH-WS & UDPGW)
+ * Developers   : Risqi Nur Fadhilah
+ * Tester       : Rerechan02
+ * Version      : v1.1-Stable
+ * License      : MIT License
+ * ----------------------------------------------------------------------------
+ *
+ * CMD Compile:
+ * CGO_ENABLED=0 go build -ldflags "-s -w -X 'main.Credits=Risqi Nur Fadhilah' -X 'main.Version=v1.1-Stable'" -o ssh-ws
+ *
+ * Requirements:
+ * - Debian 11 / Ubuntu 22.04+
+ * - Go version 1.22.0 or higher
+ */
 
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
+
+	"github.com/mukswilly/udpgw"
 )
 
 var (
-	Version = "1.0.1"
-	Credits = "Farell Aditya"
+	Version = "v1.0-Stable"
+	Credits = "Risqi Nur Fadhilah"
 )
 
+// This Colors & UI
 const (
 	ColorReset  = "\033[0m"
 	ColorRed    = "\033[31m"
@@ -64,14 +70,8 @@ const (
 	ColorCyan   = "\033[36m"
 	ColorGray   = "\033[90m"
 	ColorPurple = "\033[35m"
-)
-
-const (
-	DefaultPort     = 8080
-	DefaultBind     = "0.0.0.0"
-	DefaultTarget   = "127.0.0.1:22"
-	DefaultTimeout  = 10 * time.Second
-	LogInterval     = 10 * time.Second
+	ColorBlue   = "\033[34m"
+	
 	PayloadResponse = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
 )
 
@@ -97,91 +97,61 @@ func (wc WriteCounter) Write(p []byte) (int, error) {
 }
 
 func main() {
-	var (
-		bindAddr     string
-		port         int
-		password     string
-		fallbackAddr string
-		logFile      string
-		showHelp     bool
-	)
-
-	flag.StringVar(&bindAddr, "b", DefaultBind, "IP Address binding")
-	flag.StringVar(&bindAddr, "bind", DefaultBind, "IP Address binding")
-	flag.IntVar(&port, "p", DefaultPort, "Port server")
-	flag.IntVar(&port, "port", DefaultPort, "Port server")
-	flag.StringVar(&password, "a", "", "Password otentikasi")
-	flag.StringVar(&password, "auth", "", "Password otentikasi")
-	flag.StringVar(&fallbackAddr, "t", DefaultTarget, "Fallback target IP:Port")
-	flag.StringVar(&fallbackAddr, "target", DefaultTarget, "Fallback target")
-	flag.StringVar(&logFile, "l", "", "File log output")
-	flag.StringVar(&logFile, "logs", "", "File log output")
-	flag.BoolVar(&showHelp, "h", false, "Bantuan")
-	flag.BoolVar(&showHelp, "help", false, "Bantuan")
-
-	flag.Usage = printCustomHelp
-	flag.Parse()
-
-	if showHelp {
-		printCustomHelp()
-		os.Exit(0)
-	}
-
-	cfg := Config{
-		BindAddr:     bindAddr,
-		Port:         port,
-		Password:     password,
-		FallbackAddr: fallbackAddr,
-		LogFile:      logFile,
-	}
-
+	cfg := setupFlags()
+	
 	setupLogger(cfg.LogFile)
-	startServer(cfg)
-}
 
-func setupLogger(path string) {
-	writers := []io.Writer{os.Stdout}
-	if path != "" {
-		dir := filepath.Dir(path)
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			_ = os.MkdirAll(dir, 0755)
-		}
-		file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			log.Printf("%s[!] Gagal log file: %v%s", ColorRed, err, ColorReset)
-		} else {
-			writers = append(writers, file)
-		}
-	}
-	multi := io.MultiWriter(writers...)
-	log.SetOutput(multi)
-	log.SetFlags(log.Ldate | log.Ltime)
-}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-func startServer(cfg Config) {
-	addr := fmt.Sprintf("%s:%d", cfg.BindAddr, cfg.Port)
-	listener, err := net.Listen("tcp", addr)
+	printProxyBanner()
+
+	go func() {
+		// Config untuk BadVPN
+		configJSON := fmt.Sprintf(`{
+			"LogLevel": "info",
+			"LogFilename": "%s",
+			"HostID": "proxy-server",
+			"UdpgwPort": 7300,
+			"DNSResolverIPAddress": "1.1.1.1"
+		}`, cfg.LogFile)
+		
+		logInfo("UDPGW", "Initializing Multiplexer on port 7300...")
+		if err := udpgw.StartServer([]byte(configJSON)); err != nil {
+			logError("UDPGW", fmt.Sprintf("Service Error: %v", err))
+		}
+	}()
+
+	// Run fake proxy websocket
+	serverAddr := fmt.Sprintf("%s:%d", cfg.BindAddr, cfg.Port)
+	listener, err := net.Listen("tcp", serverAddr)
 	if err != nil {
-		logError("Gagal memulai server", err)
+		logError("CORE", fmt.Sprintf("Failed to bind %s: %v", serverAddr, err))
 		os.Exit(1)
 	}
-	defer listener.Close()
 
-	printBanner()
-	logInfo(fmt.Sprintf("Server berjalan di: %s%s%s", ColorCyan, addr, ColorReset))
-	logInfo(fmt.Sprintf("Default Target: %s%s%s", ColorCyan, cfg.FallbackAddr, ColorReset))
-	if cfg.LogFile != "" {
-		logInfo(fmt.Sprintf("Logging ke file: %s%s%s", ColorYellow, cfg.LogFile, ColorReset))
-	}
-	fmt.Println(strings.Repeat("-", 60))
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			continue
+	go func() {
+		logInfo("SSHWS", fmt.Sprintf("Listening on %s%s%s", ColorCyan, serverAddr, ColorReset))
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					continue
+				}
+			}
+			go handleConnection(conn, cfg)
 		}
-		go handleConnection(conn, cfg)
-	}
+	}()
+
+	// Shutdown Proxy
+	<-ctx.Done()
+	fmt.Println("\n" + ColorYellow + " [!] Shutdown signal received. Closing all connections..." + ColorReset)
+	listener.Close()
+	time.Sleep(1 * time.Second)
+	logInfo("SYSTEM", "Server halted successfully.")
 }
 
 func handleConnection(clientConn net.Conn, cfg Config) {
@@ -190,155 +160,142 @@ func handleConnection(clientConn net.Conn, cfg Config) {
 	clientConn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	buf := make([]byte, 4096)
 	n, err := clientConn.Read(buf)
-	if err != nil {
-		return
-	}
+	if err != nil { return }
 	clientConn.SetReadDeadline(time.Time{})
 
 	rawHeaders := string(buf[:n])
 	targetHost := getHeader(rawHeaders, "X-Real-Host")
-	if targetHost == "" {
-		targetHost = cfg.FallbackAddr
-	}
+	if targetHost == "" { targetHost = cfg.FallbackAddr }
 
 	authPass := getHeader(rawHeaders, "X-Pass")
 	if cfg.Password != "" && authPass != cfg.Password {
-		logWarn(fmt.Sprintf("Auth Gagal dari %s", clientConn.RemoteAddr()))
+		logWarn("AUTH", fmt.Sprintf("Unauthorized access from %s", clientConn.RemoteAddr()))
 		clientConn.Write([]byte("HTTP/1.1 401 Unauthorized\r\n\r\n"))
 		return
 	}
 
-	if !strings.Contains(targetHost, ":") {
-		targetHost += ":443"
-	}
+	if !strings.Contains(targetHost, ":") { targetHost += ":22" }
 
-	logSuccess(fmt.Sprintf("Tunnel: %s -> %s%s%s", clientConn.RemoteAddr(), ColorCyan, targetHost, ColorReset))
-
-	targetConn, err := net.DialTimeout("tcp", targetHost, DefaultTimeout)
+	targetConn, err := net.DialTimeout("tcp", targetHost, 10*time.Second)
 	if err != nil {
-		logError(fmt.Sprintf("Gagal connect ke %s", targetHost), err)
+		logError("TUNNEL", fmt.Sprintf("Failed to reach target %s", targetHost))
 		clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
 		return
 	}
 	defer targetConn.Close()
 
+	logSuccess("CONN", fmt.Sprintf("%s -> %s", clientConn.RemoteAddr(), targetHost))
 	clientConn.Write([]byte(PayloadResponse))
 
-	doTransferWithMonitoring(clientConn, targetConn, targetHost)
+	// Data Transfer & Monitoring TX/RX
+	doTransfer(clientConn, targetConn, targetHost)
 }
 
-func doTransferWithMonitoring(client, target net.Conn, targetName string) {
+func doTransfer(client, target net.Conn, targetName string) {
+	var tx, rx int64
 	var wg sync.WaitGroup
-
-	var tx int64
-	var rx int64
+	wg.Add(2)
 
 	stopMonitor := make(chan bool)
-
 	go func() {
-		ticker := time.NewTicker(LogInterval)
+		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
-
 		for {
 			select {
 			case <-stopMonitor:
 				return
 			case <-ticker.C:
-				currentTx := atomic.LoadInt64(&tx)
-				currentRx := atomic.LoadInt64(&rx)
-
-				if currentTx > 0 || currentRx > 0 {
-					log.Printf("%s[STATUS] %s | TX: %s | RX: %s%s",
-						ColorPurple, targetName,
-						formatBytes(currentTx),
-						formatBytes(currentRx),
-						ColorReset)
+				currTx := atomic.LoadInt64(&tx)
+				currRx := atomic.LoadInt64(&rx)
+				if currTx > 0 || currRx > 0 {
+					log.Printf("%s[MON] %s | TX: %s | RX: %s%s", ColorPurple, targetName, formatBytes(currTx), formatBytes(currRx), ColorReset)
 				}
 			}
 		}
 	}()
 
-	wg.Add(2)
-
 	go func() {
 		defer wg.Done()
-		writer := WriteCounter{Writer: target, Counter: &tx}
-		io.Copy(writer, client)
-		target.(*net.TCPConn).CloseWrite()
+		io.Copy(WriteCounter{target, &tx}, client)
+		if t, ok := target.(*net.TCPConn); ok { t.CloseWrite() }
 	}()
-
 	go func() {
 		defer wg.Done()
-		writer := WriteCounter{Writer: client, Counter: &rx}
-		io.Copy(writer, target)
-		client.(*net.TCPConn).CloseWrite()
+		io.Copy(WriteCounter{client, &rx}, target)
+		if c, ok := client.(*net.TCPConn); ok { c.CloseWrite() }
 	}()
 
 	wg.Wait()
-
 	stopMonitor <- true
-	close(stopMonitor)
+	log.Printf("%s[END] %s | Total TX: %s | RX: %s%s", ColorGray, targetName, formatBytes(tx), formatBytes(rx), ColorReset)
+}
 
-	log.Printf("%s[=] Closed: %s | TX: %s | RX: %s%s",
-		ColorGray, targetName,
-		formatBytes(atomic.LoadInt64(&tx)),
-		formatBytes(atomic.LoadInt64(&rx)),
-		ColorReset)
+func setupFlags() Config {
+	c := Config{}
+	var logF1, logF2, logF3 string
+
+	flag.StringVar(&c.BindAddr, "b", "0.0.0.0", "Bind Address")
+	flag.IntVar(&c.Port, "p", 8080, "Port server")
+	flag.StringVar(&c.Password, "a", "", "Auth Password")
+	flag.StringVar(&c.FallbackAddr, "t", "127.0.0.1:22", "Default Target")
+	
+	flag.StringVar(&logF1, "l", "", "Log file path")
+	flag.StringVar(&logF2, "log", "", "Log file path")
+	flag.StringVar(&logF3, "logs", "", "Log file path")
+	
+	flag.Parse()
+
+	if logF1 != "" { c.LogFile = logF1 } else if logF2 != "" { c.LogFile = logF2 } else { c.LogFile = logF3 }
+	
+	return c
+}
+
+func setupLogger(path string) {
+	writers := []io.Writer{os.Stdout}
+	if path != "" {
+		_ = os.MkdirAll(filepath.Dir(path), 0755)
+		file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err == nil { writers = append(writers, file) }
+	}
+	log.SetOutput(io.MultiWriter(writers...))
+	log.SetFlags(log.Ldate | log.Ltime)
+}
+
+func printProxyBanner() {
+	fmt.Print(ColorCyan)
+	fmt.Println(` ╔════════════════════════════════════════════════════════╗`)
+	fmt.Println(` ║    ___  ___  ____  _  ____  __                         `)
+	fmt.Println(` ║   / _ \/ _ \/ __ \| |/ /\ \/ /                         `)
+	fmt.Println(` ║  / ___/ , _/ /_/ /  |   \  /                           `)
+	fmt.Println(` ║ /_/  /_/|_|\____/_/|_|   /_/                           `)
+	fmt.Println(` ║                                                        `)
+	fmt.Printf(" ║  %s  VERSION   : %-37s %s\n", ColorGray, Version, ColorCyan)
+	fmt.Printf(" ║  %s  DEVELOPER : %-37s %s\n", ColorGray, Credits, ColorCyan)
+	fmt.Println(` ╚════════════════════════════════════════════════════════╝`)
+	fmt.Print(ColorReset)
+}
+
+func logInfo(tag, m string)    { log.Printf("%s[%s]%s %s", ColorBlue, tag, ColorReset, m) }
+func logSuccess(tag, m string) { log.Printf("%s[%s]%s %s", ColorGreen, tag, ColorReset, m) }
+func logWarn(tag, m string)    { log.Printf("%s[%s]%s %s", ColorYellow, tag, ColorReset, m) }
+func logError(tag, m string)   { log.Printf("%s[%s]%s %s", ColorRed, tag, ColorReset, m) }
+
+func getHeader(headers, key string) string {
+	for _, line := range strings.Split(headers, "\r\n") {
+		if strings.HasPrefix(strings.ToLower(line), strings.ToLower(key)+": ") {
+			return strings.TrimSpace(line[strings.Index(line, ":")+1:])
+		}
+	}
+	return ""
 }
 
 func formatBytes(b int64) string {
 	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
+	if b < unit { return fmt.Sprintf("%d B", b) }
 	div, exp := int64(unit), 0
 	for n := b / unit; n >= unit; n /= unit {
 		div *= unit
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
-}
-
-func printCustomHelp() {
-	printBanner()
-	fmt.Printf("Usage: %s./ssh-ws [flags]%s\n\n", ColorCyan, ColorReset)
-	printFlag("-p, --port", "Port server", fmt.Sprintf("%d", DefaultPort))
-	printFlag("-b, --bind", "Bind IP Address", DefaultBind)
-	printFlag("-t, --target", "Fallback Target", DefaultTarget)
-	printFlag("-l, --logs", "Path File Log", "(none)")
-	printFlag("-a, --auth", "Password", "(none)")
-}
-
-func printFlag(name, desc, def string) {
-	fmt.Printf("  %s%-14s%s %-25s %s(Def: %s)%s\n", ColorYellow, name, ColorReset, desc, ColorGray, def, ColorReset)
-}
-
-func printBanner() {
-	fmt.Print(ColorCyan)
-	fmt.Println(`
-   ___  ___  ____  _  ____  __
-  / _ \/ _ \/ __ \| |/ /\ \/ /
- / ___/ , _/ /_/ /   |   \  /  
-/_/  /_/|_|\____/_/|_|   /_/   `)
-
-	fmt.Printf(" :: GO-TUNNEL PRO :: %s\n", Version)
-	fmt.Printf(" :: Developers    :: %s\n", Credits)
-	fmt.Println(" :: Telegram      :: @risqinf")
-	fmt.Println()
-	fmt.Print(ColorReset)
-}
-
-func logInfo(msg string)             { log.Printf("%s[*]%s %s", ColorCyan, ColorReset, msg) }
-func logSuccess(msg string)          { log.Printf("%s[+]%s %s", ColorGreen, ColorReset, msg) }
-func logWarn(msg string)             { log.Printf("%s[!]%s %s", ColorYellow, ColorReset, msg) }
-func logError(msg string, err error) { log.Printf("%s[-]%s %s: %v", ColorRed, ColorReset, msg, err) }
-func getHeader(headers, key string) string {
-	lines := strings.Split(headers, "\r\n")
-	prefix := strings.ToLower(key) + ": "
-	for _, line := range lines {
-		if strings.HasPrefix(strings.ToLower(line), prefix) {
-			return strings.TrimSpace(line[len(prefix):])
-		}
-	}
-	return ""
 }
