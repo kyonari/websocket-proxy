@@ -41,6 +41,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -456,21 +457,49 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 func handleConnection(clientConn net.Conn, cfg Config) {
 	defer clientConn.Close()
 
+	// 1. Setup KeepAlive agar koneksi tidak mudah putus (Fix Idle EOF)
+	if tcpConn, ok := clientConn.(*net.TCPConn); ok {
+		tcpConn.SetKeepAlive(true)
+		tcpConn.SetKeepAlivePeriod(30 * time.Second)
+	}
+
 	sessionID := generateSessionID()
 	clientAddr := clientConn.RemoteAddr().String()
 	clientIP, clientPort := splitHostPort(clientAddr)
 
-	clientConn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	buf := make([]byte, 4096)
+	// 2. Perbesar Buffer ke 16KB (Fix Payload Panjang)
+	// Payload unik seringkali punya header > 4KB
+	clientConn.SetReadDeadline(time.Now().Add(10 * time.Second)) // Tambah waktu tunggu jadi 10 detik
+	buf := make([]byte, 16384) 
 	n, err := clientConn.Read(buf)
-	if err != nil { 
-		return 
+	if err != nil {
+		return
 	}
 	
 	clientConn.SetReadDeadline(time.Time{})
 
-	rawHeaders := string(buf[:n])
-	
+	// 3. Pisahkan Header dan Body (Fix Data Swallowing)
+	// Kita cari batas akhir HTTP Header (\r\n\r\n)
+	// Jika injektor mengirim SSH Hello (SSH-2.0...) nempel di belakang payload,
+	// kita harus simpan datanya di variabel 'leftover'
+	var rawHeaders string
+	var leftover []byte
+
+	sep := []byte("\r\n\r\n")
+	splitPos := bytes.Index(buf[:n], sep)
+
+	if splitPos != -1 {
+		// Header ditemukan, ambil sampai batas
+		rawHeaders = string(buf[:splitPos+4])
+		// Ambil sisa data (jika ada)
+		if n > splitPos+4 {
+			leftover = buf[splitPos+4 : n]
+		}
+	} else {
+		// Jika tidak ketemu \r\n\r\n, anggap semua adalah header (fallback)
+		rawHeaders = string(buf[:n])
+	}
+
 	realClientIP := clientIP
 	realClientPort := clientPort
 	
@@ -491,6 +520,7 @@ func handleConnection(clientConn net.Conn, cfg Config) {
 	}
 	_, targetPort := splitHostPort(targetHost)
 
+	// Koneksi ke Target (Dropbear/OpenSSH)
 	targetConn, err := net.DialTimeout("tcp", targetHost, 10*time.Second)
 	if err != nil {
 		logError("TUNNEL", fmt.Sprintf("[%s] Failed to reach %s from %s:%s", sessionID, targetHost, realClientIP, realClientPort))
@@ -524,7 +554,20 @@ func handleConnection(clientConn net.Conn, cfg Config) {
 	logSuccess("CONNECT", fmt.Sprintf("[%s] %s:%s -> %s (proxy port:%s)", 
 		sessionID, realClientIP, realClientPort, targetHost, proxyToSSHPort))
 	
+	// Balas HTTP 101 Switching Protocols ke Client
 	clientConn.Write([]byte(PayloadResponse))
+
+	// 4. KRUSIAL: Kirim sisa data (leftover) ke Target SEBELUM transfer dimulai
+	// Ini yang memperbaiki masalah EOF jika payload dan SSH Hello dikirim bersamaan
+	if len(leftover) > 0 {
+		_, err = targetConn.Write(leftover)
+		if err != nil {
+			logError("TUNNEL", fmt.Sprintf("[%s] Failed to write leftover bytes: %v", sessionID, err))
+			return
+		}
+		// Tambahkan ke statistik upload
+		atomic.AddInt64(&session.TxBytes, int64(len(leftover)))
+	}
 
 	doTransfer(clientConn, targetConn, session)
 	sshPortToSession.Delete(proxyToSSHPort)
